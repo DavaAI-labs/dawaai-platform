@@ -22,11 +22,6 @@ export default function ReviewPage() {
   const location = useLocation();
   const scanResult: ScanResponse = location.state?.scanResult;
 
-  // Redirect if no scan data
-  if (!scanResult) {
-    navigate("/");
-    return null;
-  }
 
   // Build initial line states from scan result
   const [lines, setLines] = useState<LineState[]>(
@@ -45,6 +40,11 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pharmacyName] = useState("My Pharmacy");
+
+  if (!scanResult) {
+  navigate("/");
+  return null;
+}
 
   function selectSuggestion(lineIdx: number, suggestion: MedicineSuggestion) {
     setLines(prev => prev.map((l, i) =>
