@@ -121,7 +121,7 @@ if (!scanResult) return null;
         {lines.map((line, idx) => {
           const suggestions = scanResult.lines[idx]?.suggestions || [];
           const isExpanded = expandedLine === idx;
-          const conf = line.is_manual ? "low" : (line.selected?.confidence_label || "low");
+          const conf = line.selected?.confidence_label || "low";
 
           return (
             <div key={idx} style={styles.card}>
