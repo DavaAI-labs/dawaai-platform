@@ -24,14 +24,15 @@ def _load_db():
 
     with open(DB_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
+        for i, row in enumerate(reader):
             _medicine_db.append(row)
-        i = len(_medicine_db) - 1
-        _search_index.append(f"{row['brand_name']} {row['strength']}")
-        _index_to_medicine.append(i)
-        _search_index.append(f"{row['generic_name']} {row['strength']}")
-        _index_to_medicine.append(i)
+            _search_index.append(f"{row['brand_name']} {row['strength']}")
+            _index_to_medicine.append(i)
+            _search_index.append(f"{row['generic_name']} {row['strength']}")
+            _index_to_medicine.append(i)
 
+    if not _medicine_db:
+        print("⚠ Warning: medicines.csv is empty — fuzzy matching will return no results")
 _load_db()
 
 
