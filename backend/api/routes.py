@@ -4,7 +4,6 @@
 # GET  /api/bill/{id}  → get structured bill for confirmed prescription
 
 import uuid
-import json
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -19,7 +18,20 @@ from services.correction_store import save_corrections
 router = APIRouter()
 
 # In-memory store for confirmed prescriptions (phase 1 — no DB needed)
-confirmed_store: dict = {}
+import json as _json
+
+STORE_PATH = Path(__file__).parent.parent.parent / "data" / "confirmed_store.json"
+
+def _load_store() -> dict:
+    if STORE_PATH.exists():
+        return _json.loads(STORE_PATH.read_text())
+    return {}
+
+def _save_store(store: dict):
+    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STORE_PATH.write_text(_json.dumps(store))
+
+confirmed_store: dict = _load_store()
 
 CORRECTIONS_PATH = Path(__file__).parent.parent.parent / "data" / "corrections" / "corrections.jsonl"
 
@@ -92,6 +104,7 @@ async def confirm_prescription(body: ConfirmRequest):
         "medicines": [m.dict() for m in body.medicines],
         "confirmed_at": datetime.utcnow().isoformat()
     }
+    _save_store(confirmed_store)
 
     # Save corrections to flywheel file
     edited_lines = [m for m in body.medicines if m.was_edited]

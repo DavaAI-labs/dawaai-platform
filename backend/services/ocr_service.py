@@ -5,6 +5,7 @@
 import os
 import base64
 from typing import List, Dict
+import requests
 
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", "")
 

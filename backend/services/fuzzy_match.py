@@ -15,7 +15,7 @@ DB_PATH = Path(__file__).parent.parent.parent / "data" / "medicine_db" / "medici
 
 _medicine_db: List[Dict] = []
 _search_index: List[str] = []   # flat list of searchable strings
-
+_index_to_medicine: List[int] = []
 
 def _load_db():
     global _medicine_db, _search_index
@@ -26,10 +26,11 @@ def _load_db():
         reader = csv.DictReader(f)
         for row in reader:
             _medicine_db.append(row)
-            # Index both brand and generic name for matching
-            _search_index.append(f"{row['brand_name']} {row['strength']}")
-            _search_index.append(f"{row['generic_name']} {row['strength']}")
-
+        i = len(_medicine_db) - 1
+        _search_index.append(f"{row['brand_name']} {row['strength']}")
+        _index_to_medicine.append(i)
+        _search_index.append(f"{row['generic_name']} {row['strength']}")
+        _index_to_medicine.append(i)
 
 _load_db()
 
@@ -45,7 +46,7 @@ def _clean_text(text: str) -> str:
     text = text.lower().strip()
     # Common OCR character confusions in drug names
     text = re.sub(r'\b0\b', 'o', text)   # standalone zero → o
-    text = text.replace('1', 'l')         # 1 → l  (Amoxici1lin)
+    text = re.sub(r'(?<=[a-zA-Z])1|1(?=[a-zA-Z])', 'l', text)       
     text = text.replace('rn', 'm')        # rn → m  (Metforrn1n)
     text = re.sub(r'tab\.?\s*', '', text) # remove "Tab" prefix
     text = re.sub(r'cap\.?\s*', '', text) # remove "Cap" prefix
@@ -82,7 +83,7 @@ def match_medicines(ocr_text: str, top_n: int = 3) -> List[Dict]:
     for match_str, score, idx in results:
         # Map index back to medicine row
         # Each medicine has 2 index entries (brand + generic)
-        medicine_idx = idx // 2
+        medicine_idx = _index_to_medicine[idx]
         if medicine_idx >= len(_medicine_db):
             continue
 

@@ -2,7 +2,7 @@
 // Screen 2 of 3: pharmacist sees OCR suggestions, confirms or edits each line.
 // This is the most important screen — trust is built or lost here.
 
-import React, { useState } from "react";
+import React, { useState , useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import ConfidenceBadge from "../components/ConfidenceBadge";
 import { confirmPrescription, ScanResponse, ScanLine, MedicineSuggestion, ConfirmedMedicine } from "../services/api";
@@ -41,10 +41,10 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [pharmacyName] = useState("My Pharmacy");
 
-  if (!scanResult) {
-  navigate("/");
-  return null;
-}
+useEffect(() => {
+  if (!scanResult) navigate("/");
+}, []);
+if (!scanResult) return null;
 
   function selectSuggestion(lineIdx: number, suggestion: MedicineSuggestion) {
     setLines(prev => prev.map((l, i) =>
@@ -121,7 +121,7 @@ export default function ReviewPage() {
         {lines.map((line, idx) => {
           const suggestions = scanResult.lines[idx]?.suggestions || [];
           const isExpanded = expandedLine === idx;
-          const conf = line.selected?.confidence_label || "low";
+          const conf = line.is_manual ? "low" : (line.selected?.confidence_label || "low");
 
           return (
             <div key={idx} style={styles.card}>
