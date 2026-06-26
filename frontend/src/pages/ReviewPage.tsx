@@ -43,7 +43,7 @@ export default function ReviewPage() {
 
 useEffect(() => {
   if (!scanResult) navigate("/");
-}, []);
+}, [navigate, scanResult]);
 if (!scanResult) return null;
 
   function selectSuggestion(lineIdx: number, suggestion: MedicineSuggestion) {

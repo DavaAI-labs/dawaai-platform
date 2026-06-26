@@ -3,7 +3,7 @@
 // Shows: medicine name, strength, MRP per unit, quantity, line total, grand total.
 // Barcode-sourced bills also show batch number and expiry.
 
-import React, { useRef } from "react";
+import React from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 
 interface BillMedicine {
