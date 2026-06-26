@@ -1,105 +1,119 @@
-# 💊 DavaAI — Phase 1
+# DavaAI v2.0 — Upgrade Notes
 
-Prescription digitizer for Indian pharmacies.
-Camera → OCR → Fuzzy match → Pharmacist confirms → Bill printed.
+## What's new vs v1
 
----
-
-## Project structure
-
-```
-davaai/
-├── backend/
-│   ├── main.py                      ← FastAPI entry point
-│   ├── requirements.txt
-│   ├── api/
-│   │   └── routes.py                ← /scan  /confirm  /bill
-│   └── services/
-│       ├── ocr_service.py           ← Google Vision API
-│       ├── fuzzy_match.py           ← rapidfuzz medicine matching
-│       └── correction_store.py      ← flywheel: saves pharmacist edits
-├── frontend/
-│   └── src/
-│       ├── App.tsx                  ← routing
-│       ├── pages/
-│       │   ├── ScanPage.tsx         ← camera / upload
-│       │   ├── ReviewPage.tsx       ← confirm medicines
-│       │   └── BillPage.tsx         ← printable bill
-│       ├── components/
-│       │   └── ConfidenceBadge.tsx  ← 🟢🟡🔴 trust indicator
-│       └── services/
-│           └── api.ts               ← all backend calls
-└── data/
-    ├── medicine_db/
-    │   └── medicines.csv            ← top-500 Indian medicines
-    └── corrections/
-        └── corrections.jsonl        ← flywheel training pairs (auto-created)
-```
+### 🏠 Home Screen (NEW)
+- Dual-entry UI: **Scan Prescription** (OCR path) vs **Scan Medicine Barcode** (new path)
+- Quick action shortcuts: Today's Bills, Search Medicine, Low Stock
+- Shows flow diagrams so pharmacist knows what each path does
 
 ---
 
-## Setup
+### 🔴 Barcode Scan (NEW — `BarcodeScanPage.tsx` + `barcode_routes.py`)
+Full new feature matching the design spec:
 
-### 1. Get a Google Vision API key
-- Go to https://console.cloud.google.com
-- Enable the **Cloud Vision API**
-- Create an API key under Credentials
-- Paste it into `.env`
+**After scanning a barcode, shows:**
+- 💊 Medicine name + generic name
+- 💉 Strength (e.g., 500 mg)
+- 🏭 Manufacturer
+- 💰 Price (MRP)
+- 📦 Batch number
+- 📅 Expiry date (highlighted red if ≤3 months away)
+- 🛒 Available stock (highlighted red if < 10 units)
+- **+ Add to Bill** button with quantity selector and line total (₹)
 
-### 2. Backend
+**If barcode isn't recognized:**
+- Search medicine by name fallback
+- Top 5 results with MRP shown
+- Select → shows full detail card → add to bill
+
+**Cart:**
+- Running cart with qty adjustment + remove
+- Grand total MRP shown live
+- One-tap "Generate Bill" with full breakdown
+
+**Backend endpoints added:**
+```
+GET  /api/barcode/{barcode}          → medicine details by barcode
+GET  /api/medicines/search?q=name    → name-based search fallback
+POST /api/barcode/bill               → create bill from cart (decrements stock)
+```
+
+**Sample medicine DB:** `data/medicine_db/medicines_with_barcodes.csv`  
+Add your medicines with columns: `barcode, brand_name, generic_name, strength, manufacturer, mrp, batch_number, expiry_date, available_stock, form`
+
+---
+
+### 🧾 Bill Page (upgraded)
+- Supports both OCR prescriptions and barcode-scanned bills
+- Shows MRP per unit + line totals + grand total for barcode bills
+- Barcode bills display batch number and expiry per line
+- Source badge ("Barcode Scan" vs prescription)
+- Share button (Web Share API for WhatsApp/PDF)
+- Print layout improved for thermal printers
+
+---
+
+### 🔧 Technical upgrades
+
+**Frontend**
+- Added `react-router-dom v6` route for `/barcode`
+- Added `@zxing/library` for real camera barcode scanning (plug into `BarcodeScanPage` — see comment in component)
+- All pages use `proxy: "http://localhost:8000"` so API calls work in dev
+
+**Backend**
+- `barcode_routes.py` — new router, auto-loaded in `main.py`
+- In-memory barcode index with CSV loader; falls back to seeded demo data in dev
+- Stock decrement on bill creation (in-memory for v2; swap for DB write in production)
+- `main.py` now mounts both routers under `/api`
+
+---
+
+## Running locally
 
 ```bash
+# Backend
 cd backend
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp ../.env.example ../.env        # fill in your API key
 uvicorn main:app --reload --port 8000
-```
 
-Backend runs at: http://localhost:8000
-API docs at:     http://localhost:8000/docs
-
-### 3. Frontend
-
-```bash
+# Frontend
 cd frontend
 npm install
 npm start
 ```
 
-Frontend runs at: http://localhost:3000
+Open http://localhost:3000 — Home screen → choose Scan Prescription or Scan Barcode.
 
 ---
 
-## Testing without a Google Vision API key
+## Connecting a real barcode camera
 
-If `GOOGLE_VISION_API_KEY` is not set, the OCR service returns **mock data** —
-realistic prescription lines with common OCR errors. You can test the full
-Scan → Review → Bill flow without any API key.
+In `BarcodeScanPage.tsx`, replace `handleSimulateScan` with ZXing:
+
+```typescript
+import { BrowserMultiFormatReader } from "@zxing/library";
+
+const reader = new BrowserMultiFormatReader();
+const result = await reader.decodeFromVideoDevice(null, videoRef.current, (res) => {
+  if (res) {
+    reader.reset();
+    processBarcode(res.getText());
+  }
+});
+```
+
+Attach a `<video ref={videoRef}>` inside the viewfinder div.
 
 ---
 
-## The flywheel
+## Adding medicines to barcode DB
 
-Every time a pharmacist changes a suggestion, the correction is saved to:
-```
-data/corrections/corrections.jsonl
-```
+Edit `data/medicine_db/medicines_with_barcodes.csv`:
 
-Each line looks like:
-```json
-{"scan_id":"a3f9bc","ocr_raw":"Tab Amoxici1lin 500mg","corrected_to":"Amoxicillin 500mg","brand_name":"Novamox","timestamp":"2024-01-15T10:32:11"}
+```csv
+barcode,brand_name,generic_name,strength,manufacturer,mrp,batch_number,expiry_date,available_stock,form
+8901030512345,YourMed 250,Active Ingredient,250 mg,Manufacturer,45.00,BATCH001,06/2027,100,Tablet
 ```
 
-After ~5,000 lines, you have a fine-tuning dataset. That's your moat.
-
----
-
-## Phase 2 (do not build yet)
-
-- Dosage risk engine (flag 5000mg vs 500mg)
-- Offline mode / sync queue
-- Basic inventory deduction
-- Multi-tenant isolation
-- Model retraining pipeline
+The backend loads this at startup. Restart the server after changes.

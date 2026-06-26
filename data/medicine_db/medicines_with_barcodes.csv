@@ -1,0 +1,16 @@
+barcode,brand_name,generic_name,strength,manufacturer,mrp,batch_number,expiry_date,available_stock,form
+8901030589396,Crocin 650,Paracetamol,650 mg,GSK Pharma,34.50,BCHX2411,12/2026,48,Tablet
+8901030512301,Amoxicillin 500,Amoxicillin,500 mg,Cipla Ltd,72.00,AMX2503,06/2027,120,Capsule
+8901030554412,Metformin SR 500,Metformin Hydrochloride,500 mg,Sun Pharma,28.00,MF2502,09/2026,7,Tablet
+8901030577892,Pantocid 40,Pantoprazole,40 mg,Sun Pharma,85.50,PAN2601,08/2027,60,Tablet
+8901030533345,Azithral 500,Azithromycin,500 mg,Alembic Pharma,110.00,AZ2504,03/2027,30,Tablet
+8901030511234,Crocin 500,Paracetamol,500 mg,GSK Pharma,22.00,BCHX2409,10/2026,90,Tablet
+8901030544321,Augmentin 625,Amoxicillin + Clavulanic Acid,625 mg,GSK Pharma,185.00,AUG2503,05/2027,25,Tablet
+8901030566789,Atorva 10,Atorvastatin,10 mg,Zydus Cadila,42.00,ATV2502,07/2027,70,Tablet
+8901030599012,Glycomet 500,Metformin,500 mg,USV Ltd,26.50,GLY2504,11/2026,55,Tablet
+8901030522345,Dolo 650,Paracetamol,650 mg,Micro Labs,28.00,DL2601,01/2027,200,Tablet
+8901030588901,Omez 20,Omeprazole,20 mg,Dr Reddy's,38.00,OMZ2503,04/2027,85,Capsule
+8901030511122,Ciprobid 500,Ciprofloxacin,500 mg,Cadila,65.00,CPB2502,06/2027,40,Tablet
+8901030577654,Montair 10,Montelukast,10 mg,Cipla,110.00,MNT2601,09/2027,20,Tablet
+8901030566543,Telma 40,Telmisartan,40 mg,Glenmark,78.00,TLM2503,08/2027,35,Tablet
+8901030533210,Limcee 500,Vitamin C,500 mg,Abbott,18.00,LIM2412,02/2027,300,Chewable Tablet
