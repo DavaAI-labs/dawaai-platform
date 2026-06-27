@@ -193,3 +193,9 @@ begin new.updated_at = now(); return new; end $$;
 create trigger inventory_updated_at
   before update on inventory
   for each row execute function update_updated_at();
+  
+  CREATE POLICY "allow_insert_pharmacy" ON pharmacies
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "allow_insert_profile" ON profiles
+  FOR INSERT WITH CHECK (true);
