@@ -5,17 +5,27 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - GOOGLE_VISION_API_KEY=${GOOGLE_VISION_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
 
   frontend:
     image: node:20-alpine
     working_dir: /app
     volumes:
       - ./frontend:/app
-    command: sh -c "npm install && npm start"
+    command: sh -c "npm install && npm run build && npx serve -s build -l 3000"
     ports:
       - "3000:3000"
     environment:
-      - REACT_APP_API_URL=http://localhost:8000/api
+      - REACT_APP_SUPABASE_URL=${REACT_APP_SUPABASE_URL}
+      - REACT_APP_SUPABASE_ANON_KEY=${REACT_APP_SUPABASE_ANON_KEY}
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000/api}
+    depends_on:
+      - backend
+    restart: unless-stopped

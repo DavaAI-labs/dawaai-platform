@@ -1,9 +1,10 @@
-// src/context/AuthContext.tsx
-// Wraps the whole app. Any page can call useAuth() to get pharmacy, profile, user.
+// AuthContext.tsx — Production version
+// Also wires up the API client with pharmacy_id on login
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase, getProfile, getPharmacy, Profile, Pharmacy } from "../services/supabase";
+import { setPharmacyId } from "../services/api";
 
 interface AuthContextType {
   session: Session | null;
@@ -30,6 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const prof = await getProfile();
     setProfile(prof);
     if (prof?.pharmacy_id) {
+      setPharmacyId(prof.pharmacy_id); // wire up API client
       const pharm = await getPharmacy(prof.pharmacy_id);
       setPharmacy(pharm);
     }
@@ -51,7 +53,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) loadUserData();
-      else { setProfile(null); setPharmacy(null); }
+      else {
+        setProfile(null);
+        setPharmacy(null);
+        setPharmacyId(null);
+      }
     });
 
     return () => subscription.unsubscribe();
