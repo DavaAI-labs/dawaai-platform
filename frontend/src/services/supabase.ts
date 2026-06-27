@@ -95,7 +95,14 @@ export async function signUp(email: string, password: string, pharmacyData: {
 }) {
   const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
   if (authError) throw authError;
-  const userId = authData.user!.id;
+
+  const userId = authData.user?.id;
+  if (!userId) throw new Error("Signup failed — no user ID returned");
+
+  // If email confirmation is enabled, there's no live session yet — inserts would fail RLS
+  if (!authData.session) {
+    throw new Error("CONFIRM_EMAIL");
+  }
 
   // Create pharmacy
   const { data: pharmacy, error: pError } = await supabase

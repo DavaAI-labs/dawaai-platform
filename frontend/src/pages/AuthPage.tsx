@@ -54,7 +54,11 @@ export default function AuthPage() {
       await signUp(regEmail, regPassword, { pharmacyName, ownerName, phone, address, licenseNo });
       navigate("/");
     } catch (err: any) {
-      setError(err.message || "Registration failed");
+      if (err.message === "CONFIRM_EMAIL") {
+        setError("✅ Account created! Check your email and click the confirmation link, then come back to log in.");
+      } else {
+        setError(err.message || "Registration failed");
+      }
     } finally {
       setLoading(false);
     }
