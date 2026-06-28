@@ -1,26 +1,35 @@
-# barcode_routes.py — Production Version
-# Uses Supabase inventory instead of in-memory / CSV when configured.
+# api/barcode_routes.py — v5
+# Changes from v4:
+#   + JWT auth via Depends(require_pharmacy) on all mutating endpoints
+#   + Shared sb_headers() from services/supabase_client (no duplication)
+#   + Per-pharmacy JSONL fallback path (fixes multi-tenant isolation in dev mode)
 
 import uuid
-import os
+import logging
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query, Header
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, field_validator
 from typing import List, Optional
 import csv
 import json
+import re
 import httpx
 
+from limiter import limiter
+from middleware.auth import require_pharmacy
+from services.supabase_client import sb_headers, SUPABASE_URL
+
 router = APIRouter()
+logger = logging.getLogger("dawaai.barcode")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+BARCODE_DB_PATH = (
+    Path(__file__).parent.parent.parent / "data" / "medicine_db" / "medicines_with_barcodes.csv"
+)
+STORE_PATH = (
+    Path(__file__).parent.parent.parent / "data" / "confirmed_store.json"
+)
 
-BARCODE_DB_PATH = Path(__file__).parent.parent.parent / "data" / "medicine_db" / "medicines_with_barcodes.csv"
-STORE_PATH = Path(__file__).parent.parent.parent / "data" / "confirmed_store.json"
-
-# In-memory fallback indexes (used only if Supabase not configured)
 _barcode_index: dict = {}
 _name_index: list = []
 
@@ -37,33 +46,48 @@ def _load_barcode_db():
         for row in reader:
             _barcode_index[row["barcode"]] = row
             _name_index.append(row)
+    logger.info(f'"barcode_db_loaded","count":{len(_barcode_index)}')
 
 
 def _seed_demo_data():
     demo = [
-        {"barcode": "8901030589396", "brand_name": "Crocin 650", "generic_name": "Paracetamol",
-         "strength": "650 mg", "manufacturer": "GSK Pharma", "mrp": "34.50",
-         "batch_number": "BCHX2411", "expiry_date": "12/2026", "available_stock": "48", "form": "Tablet"},
-        {"barcode": "8901030512301", "brand_name": "Amoxicillin 500", "generic_name": "Amoxicillin",
-         "strength": "500 mg", "manufacturer": "Cipla Ltd", "mrp": "72.00",
-         "batch_number": "AMX2503", "expiry_date": "06/2027", "available_stock": "120", "form": "Capsule"},
-        {"barcode": "8901030554412", "brand_name": "Metformin SR 500", "generic_name": "Metformin Hydrochloride",
-         "strength": "500 mg", "manufacturer": "Sun Pharma", "mrp": "28.00",
-         "batch_number": "MF2502", "expiry_date": "09/2026", "available_stock": "7", "form": "Tablet"},
-        {"barcode": "8901030577892", "brand_name": "Pantocid 40", "generic_name": "Pantoprazole",
-         "strength": "40 mg", "manufacturer": "Sun Pharma", "mrp": "85.50",
-         "batch_number": "PAN2601", "expiry_date": "08/2027", "available_stock": "60", "form": "Tablet"},
-        {"barcode": "8901030533345", "brand_name": "Azithral 500", "generic_name": "Azithromycin",
-         "strength": "500 mg", "manufacturer": "Alembic Pharma", "mrp": "110.00",
-         "batch_number": "AZ2504", "expiry_date": "03/2027", "available_stock": "30", "form": "Tablet"},
+        {
+            "barcode": "8901030589396", "brand_name": "Crocin 650", "generic_name": "Paracetamol",
+            "strength": "650 mg", "manufacturer": "GSK Pharma", "mrp": "34.50",
+            "batch_number": "BCHX2411", "expiry_date": "12/2026", "available_stock": "48", "form": "Tablet",
+        },
+        {
+            "barcode": "8901030512301", "brand_name": "Amoxicillin 500", "generic_name": "Amoxicillin",
+            "strength": "500 mg", "manufacturer": "Cipla Ltd", "mrp": "72.00",
+            "batch_number": "AMX2503", "expiry_date": "06/2027", "available_stock": "120", "form": "Capsule",
+        },
+        {
+            "barcode": "8901030554412", "brand_name": "Metformin SR 500",
+            "generic_name": "Metformin Hydrochloride",
+            "strength": "500 mg", "manufacturer": "Sun Pharma", "mrp": "28.00",
+            "batch_number": "MF2502", "expiry_date": "09/2026", "available_stock": "7", "form": "Tablet",
+        },
+        {
+            "barcode": "8901030577892", "brand_name": "Pantocid 40", "generic_name": "Pantoprazole",
+            "strength": "40 mg", "manufacturer": "Sun Pharma", "mrp": "85.50",
+            "batch_number": "PAN2601", "expiry_date": "08/2027", "available_stock": "60", "form": "Tablet",
+        },
+        {
+            "barcode": "8901030533345", "brand_name": "Azithral 500", "generic_name": "Azithromycin",
+            "strength": "500 mg", "manufacturer": "Alembic Pharma", "mrp": "110.00",
+            "batch_number": "AZ2504", "expiry_date": "03/2027", "available_stock": "30", "form": "Tablet",
+        },
     ]
     for row in demo:
         _barcode_index[row["barcode"]] = row
         _name_index.append(row)
+    logger.info('"barcode_db_seeded_with_demo_data"')
 
 
 _load_barcode_db()
 
+
+# ── Models ─────────────────────────────────────────────────────────────────
 
 class MedicineDetail(BaseModel):
     barcode: str
@@ -85,8 +109,23 @@ class CartItem(BaseModel):
     strength: str
     quantity: int
     mrp: float
+    inventory_id: Optional[str] = None   # required for stock decrement
     batch_number: Optional[str] = None
     expiry_date: Optional[str] = None
+
+    @field_validator("quantity")
+    @classmethod
+    def quantity_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("quantity must be ≥ 1")
+        return v
+
+    @field_validator("mrp")
+    @classmethod
+    def mrp_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("mrp cannot be negative")
+        return v
 
 
 class BarcodeBillRequest(BaseModel):
@@ -94,16 +133,29 @@ class BarcodeBillRequest(BaseModel):
     pharmacy_name: Optional[str] = "Pharmacy"
     cart: List[CartItem]
 
+    @field_validator("cart")
+    @classmethod
+    def cart_not_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("cart cannot be empty")
+        return v
+
+
+# ── Supabase helpers ──────────────────────────────────────────────────────
 
 async def _supabase_barcode_lookup(pharmacy_id: str, barcode: str):
     """Look up barcode in Supabase inventory for the given pharmacy."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+    if not SUPABASE_URL:
         return None
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{SUPABASE_URL}/rest/v1/inventory",
-            params={"pharmacy_id": f"eq.{pharmacy_id}", "barcode": f"eq.{barcode}", "select": "*"},
-            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+            params={
+                "pharmacy_id": f"eq.{pharmacy_id}",
+                "barcode": f"eq.{barcode}",
+                "select": "*",
+            },
+            headers=sb_headers(),
             timeout=8,
         )
         if resp.status_code == 200:
@@ -112,15 +164,46 @@ async def _supabase_barcode_lookup(pharmacy_id: str, barcode: str):
     return None
 
 
+async def _decrement_stock_atomic(inventory_id: str, qty: int, client: httpx.AsyncClient) -> bool:
+    """
+    Atomically decrement stock using a Postgres RPC.
+    The function (defined in schema.sql) uses UPDATE … WHERE quantity >= amount
+    so it never goes negative and is safe under concurrent requests.
+    Returns True on success, False if insufficient stock.
+    """
+    resp = await client.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/decrement_stock",
+        json={"item_id": inventory_id, "amount": qty},
+        headers=sb_headers(),
+        timeout=8,
+    )
+    if resp.status_code == 200:
+        result = resp.json()
+        # The RPC returns the new quantity; None means the WHERE clause failed (no stock)
+        return result is not None
+    logger.error(
+        f'"decrement_stock_failed","inventory_id":"{inventory_id}","status":{resp.status_code}'
+    )
+    return False
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────
+
 @router.get("/barcode/{barcode}", response_model=MedicineDetail)
+@limiter.limit("120/minute")
 async def get_medicine_by_barcode(
+    request: Request,
     barcode: str,
-    x_pharmacy_id: Optional[str] = Header(None),
+    pharmacy_id: str = Depends(require_pharmacy),
 ):
-    # Try Supabase first (per-pharmacy inventory)
-    if x_pharmacy_id and SUPABASE_URL:
-        med = await _supabase_barcode_lookup(x_pharmacy_id, barcode)
+    # Basic barcode sanity check (digits only, 8–14 chars — covers EAN-8/13, UPC-A)
+    if not re.fullmatch(r"\d{8,14}", barcode):
+        raise HTTPException(status_code=422, detail="Invalid barcode format.")
+
+    if pharmacy_id and SUPABASE_URL:
+        med = await _supabase_barcode_lookup(pharmacy_id, barcode)
         if med:
+            logger.info(f'"barcode_hit","barcode":"{barcode}","source":"supabase"')
             return MedicineDetail(
                 barcode=barcode,
                 brand_name=med.get("brand_name", ""),
@@ -134,11 +217,12 @@ async def get_medicine_by_barcode(
                 form=med.get("form", ""),
             )
 
-    # Fallback: global CSV/demo index
     med = _barcode_index.get(barcode)
     if not med:
+        logger.warning(f'"barcode_miss","barcode":"{barcode}"')
         raise HTTPException(status_code=404, detail=f"No medicine found for barcode {barcode}")
 
+    logger.info(f'"barcode_hit","barcode":"{barcode}","source":"csv"')
     return MedicineDetail(
         barcode=barcode,
         brand_name=med["brand_name"],
@@ -154,22 +238,23 @@ async def get_medicine_by_barcode(
 
 
 @router.get("/medicines/search")
+@limiter.limit("120/minute")
 async def search_medicines(
-    q: str = Query(..., min_length=2),
-    x_pharmacy_id: Optional[str] = Header(None),
+    request: Request,
+    q: str = Query(..., min_length=2, max_length=100),
+    pharmacy_id: str = Depends(require_pharmacy),
 ):
-    # Try Supabase inventory search
-    if x_pharmacy_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    if pharmacy_id and SUPABASE_URL:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{SUPABASE_URL}/rest/v1/inventory",
                 params={
-                    "pharmacy_id": f"eq.{x_pharmacy_id}",
+                    "pharmacy_id": f"eq.{pharmacy_id}",
                     "or": f"brand_name.ilike.%{q}%,generic_name.ilike.%{q}%",
                     "select": "*",
-                    "limit": "5",
+                    "limit": "8",
                 },
-                headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+                headers=sb_headers(),
                 timeout=8,
             )
             if resp.status_code == 200 and resp.json():
@@ -189,7 +274,6 @@ async def search_medicines(
                     for m in resp.json()
                 ]
 
-    # Fallback: global index
     q_lower = q.lower()
     results = []
     for med in _name_index:
@@ -206,79 +290,108 @@ async def search_medicines(
                 "available_stock": int(med["available_stock"]),
                 "form": med["form"],
             })
-            if len(results) >= 5:
+            if len(results) >= 8:
                 break
     return results
 
 
 @router.post("/barcode/bill")
-async def create_barcode_bill(body: BarcodeBillRequest):
+@limiter.limit("30/minute")
+async def create_barcode_bill(
+    request: Request,
+    body: BarcodeBillRequest,
+    pharmacy_id: str = Depends(require_pharmacy),
+):
+    # Use verified pharmacy_id from JWT; body.pharmacy_id is advisory only
+    effective_pharmacy_id = pharmacy_id or body.pharmacy_id
     bill_id = f"BC-{str(uuid.uuid4())[:6].upper()}"
+    total_mrp = round(sum(i.mrp * i.quantity for i in body.cart), 2)
 
-    # If Supabase configured, save bill there
-    if body.pharmacy_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    if effective_pharmacy_id and SUPABASE_URL:
         async with httpx.AsyncClient() as client:
+            # 1. Insert bill
             bill_payload = {
-                "pharmacy_id": body.pharmacy_id,
+                "pharmacy_id": effective_pharmacy_id,
                 "bill_number": bill_id,
                 "source": "barcode",
-                "total_mrp": sum(i.mrp * i.quantity for i in body.cart),
+                "total_mrp": total_mrp,
                 "total_items": len(body.cart),
             }
             bill_resp = await client.post(
                 f"{SUPABASE_URL}/rest/v1/bills",
                 json=bill_payload,
-                headers={
-                    "apikey": SUPABASE_SERVICE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                    "Prefer": "return=representation",
-                    "Content-Type": "application/json",
-                },
+                headers={**sb_headers(), "Prefer": "return=representation"},
                 timeout=8,
             )
-            if bill_resp.status_code in (200, 201):
-                bill_row = bill_resp.json()[0] if isinstance(bill_resp.json(), list) else bill_resp.json()
-                bill_db_id = bill_row.get("id")
-                if bill_db_id:
-                    items_payload = [
-                        {
-                            "bill_id": bill_db_id,
-                            "brand_name": i.brand_name,
-                            "generic_name": i.generic_name,
-                            "strength": i.strength,
-                            "quantity": i.quantity,
-                            "mrp": i.mrp,
-                        }
-                        for i in body.cart
-                    ]
-                    await client.post(
-                        f"{SUPABASE_URL}/rest/v1/bill_items",
-                        json=items_payload,
-                        headers={
-                            "apikey": SUPABASE_SERVICE_KEY,
-                            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                            "Content-Type": "application/json",
-                        },
-                        timeout=8,
+            if bill_resp.status_code not in (200, 201):
+                logger.error(f'"bill_insert_failed","status":{bill_resp.status_code}')
+                raise HTTPException(status_code=502, detail="Failed to save bill.")
+
+            bill_row = bill_resp.json()
+            bill_db_id = (bill_row[0] if isinstance(bill_row, list) else bill_row).get("id")
+
+            # 2. Insert bill items
+            if bill_db_id:
+                items_payload = [
+                    {
+                        "bill_id": bill_db_id,
+                        "inventory_id": i.inventory_id,
+                        "brand_name": i.brand_name,
+                        "generic_name": i.generic_name,
+                        "strength": i.strength,
+                        "quantity": i.quantity,
+                        "mrp": i.mrp,
+                    }
+                    for i in body.cart
+                ]
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/bill_items",
+                    json=items_payload,
+                    headers=sb_headers(),
+                    timeout=8,
+                )
+
+                # 3. Atomically decrement stock for each item that has an inventory_id
+                stock_failures = []
+                for item in body.cart:
+                    if item.inventory_id:
+                        ok = await _decrement_stock_atomic(item.inventory_id, item.quantity, client)
+                        if not ok:
+                            stock_failures.append(item.brand_name)
+
+                if stock_failures:
+                    logger.error(
+                        f'"stock_decrement_insufficient","items":{stock_failures},"bill_id":"{bill_id}"'
                     )
+
+        logger.info(f'"bill_created","bill_id":"{bill_id}","total_mrp":{total_mrp}')
     else:
-        # Fallback: persist to local JSON
+        # Fallback: per-pharmacy JSON file (dev mode only)
+        # Each pharmacy writes to its own file to prevent cross-tenant data leakage.
+        safe_pid = re.sub(r"[^a-zA-Z0-9_-]", "_", effective_pharmacy_id or "anon")
+        store_path = STORE_PATH.parent / f"confirmed_store_{safe_pid}.json"
         store: dict = {}
-        if STORE_PATH.exists():
-            store = json.loads(STORE_PATH.read_text())
+        if store_path.exists():
+            try:
+                store = json.loads(store_path.read_text())
+            except json.JSONDecodeError:
+                store = {}
         store[bill_id] = {
             "bill_id": bill_id,
             "source": "barcode",
             "pharmacy_name": body.pharmacy_name,
-            "medicines": [item.dict() for item in body.cart],
+            "pharmacy_id": effective_pharmacy_id,
+            "medicines": [item.model_dump() for item in body.cart],
             "created_at": datetime.utcnow().isoformat(),
         }
-        STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STORE_PATH.write_text(json.dumps(store, indent=2))
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text(json.dumps(store, indent=2))
+        logger.info(f'"bill_created_local","bill_id":"{bill_id}","pharmacy_id":"{effective_pharmacy_id}"')
 
     return {
         "bill_id": bill_id,
         "total_items": len(body.cart),
         "total_quantity": sum(i.quantity for i in body.cart),
-        "total_mrp": round(sum(i.mrp * i.quantity for i in body.cart), 2),
+        "total_mrp": total_mrp,
     }
+

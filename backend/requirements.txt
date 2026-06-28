@@ -1,3 +1,4 @@
+﻿# ── Runtime ───────────────────────────────────────────────────────────────
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
 python-multipart==0.0.9
@@ -7,3 +8,16 @@ rapidfuzz==3.6.1
 pydantic==2.6.3
 pillow==10.2.0
 python-dotenv==1.0.1
+
+# ── v5 additions ──────────────────────────────────────────────────────────
+sentry-sdk[fastapi]==1.45.0
+slowapi==0.1.9
+PyJWT==2.8.0
+
+# ── Testing ───────────────────────────────────────────────────────────────
+pytest==8.1.1
+pytest-anyio==0.0.0
+anyio[trio]==4.3.0
+
+# NOTE: google-cloud-vision and anthropic removed.
+# Both replaced by Gemini 1.5 Flash (free) via plain httpx REST calls.

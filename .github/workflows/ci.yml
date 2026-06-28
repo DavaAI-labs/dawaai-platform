@@ -1,0 +1,145 @@
+# .github/workflows/ci.yml — DavaAI v5
+#
+# Runs on every push and pull request to main.
+# Four jobs run in parallel after the install step:
+#   lint     — ruff + black (fast style gate)
+#   typecheck — mypy (catches type errors before deploy)
+#   test     — pytest with coverage threshold (≥80%)
+#   docker   — build image to catch Dockerfile regressions
+#
+# Deploy job runs only on push to main after all checks pass.
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ── Linting ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff + black)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install linters
+        run: pip install ruff black
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: black check
+        run: black --check .
+
+  # ── Type checking ─────────────────────────────────────────────────────────
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps + mypy
+        run: pip install -r requirements.txt mypy
+
+      - name: mypy
+        run: mypy . --ignore-missing-imports --exclude tests/
+
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    name: Tests (pytest + coverage)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt pytest-cov
+
+      - name: Run tests with coverage
+        run: |
+          pytest -v \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            --tb=short
+        env:
+          # Dummy values so imports that read os.getenv don't fail
+          SUPABASE_URL: ""
+          SUPABASE_SERVICE_KEY: ""
+          SUPABASE_JWT_SECRET: ""
+          GOOGLE_VISION_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          SENTRY_DSN: ""
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: backend/htmlcov/
+          retention-days: 7
+
+  # ── Docker build ──────────────────────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: dawaai-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy (main branch only) ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Railway
+    needs: [lint, typecheck, test, docker]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        run: railway up --service dawaai-api
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

@@ -1,26 +1,33 @@
-# fuzzy_match.py
-# Matches dirty OCR text against the medicine database.
-# Uses rapidfuzz for Levenshtein + token sort ratio.
-# Returns top 3 ranked matches with confidence scores.
+# services/fuzzy_match.py — v4
+# Changes from v3:
+#   + Structured logging replacing print()
+#   + Graceful handling if medicines.csv is missing (warns instead of crashing)
 
 import csv
+import logging
 import re
 from pathlib import Path
 from typing import List, Dict
+
 from rapidfuzz import fuzz, process
 
-# ── Load medicine DB once at startup ──────────────────────────────────────
+logger = logging.getLogger("dawaai.fuzzy_match")
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "medicine_db" / "medicines.csv"
 
 _medicine_db: List[Dict] = []
-_search_index: List[str] = []   # flat list of searchable strings
+_search_index: List[str] = []
 _index_to_medicine: List[int] = []
+
 
 def _load_db():
     global _medicine_db, _search_index
     if _medicine_db:
-        return  # already loaded
+        return
+
+    if not DB_PATH.exists():
+        logger.warning(f'"medicines_csv_missing","path":"{DB_PATH}"')
+        return
 
     with open(DB_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -32,58 +39,47 @@ def _load_db():
             _index_to_medicine.append(i)
 
     if not _medicine_db:
-        print("⚠ Warning: medicines.csv is empty — fuzzy matching will return no results")
+        logger.warning('"medicines_csv_empty — fuzzy matching will return no results"')
+    else:
+        logger.info(f'"medicine_db_loaded","count":{len(_medicine_db)}')
+
+
 _load_db()
 
 
-# ── Matching logic ─────────────────────────────────────────────────────────
-
 def _clean_text(text: str) -> str:
-    """
-    Pre-process OCR text before matching.
-    Fixes common OCR errors in medicine names.
-    e.g. '0' → 'o', '1' → 'l', 'rn' → 'm'
-    """
+    """Pre-process OCR text before matching."""
     text = text.lower().strip()
-    # Common OCR character confusions in drug names
-    text = re.sub(r'\b0\b', 'o', text)   # standalone zero → o
-    text = re.sub(r'(?<=[a-zA-Z])1|1(?=[a-zA-Z])', 'l', text)       
-    text = text.replace('rn', 'm')        # rn → m  (Metforrn1n)
-    text = re.sub(r'tab\.?\s*', '', text) # remove "Tab" prefix
-    text = re.sub(r'cap\.?\s*', '', text) # remove "Cap" prefix
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\b0\b", "o", text)
+    text = re.sub(r"(?<=[a-zA-Z])1|1(?=[a-zA-Z])", "l", text)
+    text = text.replace("rn", "m")
+    text = re.sub(r"tab\.?\s*", "", text)
+    text = re.sub(r"cap\.?\s*", "", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def match_medicines(ocr_text: str, top_n: int = 3) -> List[Dict]:
     """
     Input:  raw OCR text for one prescription line
-    Output: top N medicine matches, each with:
-            - matched_name
-            - brand_name, generic_name, strength, manufacturer
-            - score (0–100)
-            - confidence_label: 'high' | 'medium' | 'low'
+    Output: top N medicine matches with confidence scores
     """
     cleaned = _clean_text(ocr_text)
 
     if not cleaned or len(cleaned) < 2:
         return []
 
-    # rapidfuzz: token_sort_ratio handles word-order differences
-    # e.g. "500mg Amoxicillin" still matches "Amoxicillin 500mg"
     results = process.extract(
         cleaned,
         _search_index,
         scorer=fuzz.token_sort_ratio,
-        limit=top_n * 2   # fetch extra, deduplicate below
+        limit=top_n * 2,
     )
 
-    seen_brands = set()
+    seen_brands: set = set()
     matches = []
 
     for match_str, score, idx in results:
-        # Map index back to medicine row
-        # Each medicine has 2 index entries (brand + generic)
         medicine_idx = _index_to_medicine[idx]
         if medicine_idx >= len(_medicine_db):
             continue
@@ -91,12 +87,10 @@ def match_medicines(ocr_text: str, top_n: int = 3) -> List[Dict]:
         med = _medicine_db[medicine_idx]
         brand = med["brand_name"]
 
-        # Deduplicate — don't return same brand twice
         if brand in seen_brands:
             continue
         seen_brands.add(brand)
 
-        # Confidence label for UI badge
         if score >= 80:
             label = "high"
         elif score >= 55:
@@ -106,13 +100,13 @@ def match_medicines(ocr_text: str, top_n: int = 3) -> List[Dict]:
 
         matches.append({
             "matched_name": f"{brand} {med['strength']}",
-            "brand_name":   brand,
+            "brand_name": brand,
             "generic_name": med["generic_name"],
-            "strength":     med["strength"],
+            "strength": med["strength"],
             "manufacturer": med["manufacturer"],
-            "form":         med["form"],
-            "score":        score,
-            "confidence_label": label
+            "form": med["form"],
+            "score": score,
+            "confidence_label": label,
         })
 
         if len(matches) >= top_n:

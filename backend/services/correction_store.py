@@ -1,55 +1,66 @@
-# correction_store.py
-# Every time a pharmacist edits an OCR suggestion, we save it here.
-# Format: one JSON object per line (JSONL) — easy to read, easy to train on.
-# This file IS the flywheel. After 5,000 lines, you have a fine-tuning dataset.
+# services/correction_store.py — v4
+# Changes from v3:
+#   + save_correction_record() accepts a plain dict (used as fallback from routes.py)
+#   + save_corrections() retained for backward compat with any callers passing ORM objects
+#   + Structured logging replacing print()
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-CORRECTIONS_FILE = Path(__file__).parent.parent.parent / "data" / "corrections" / "corrections.jsonl"
+logger = logging.getLogger("dawaai.correction_store")
+
+CORRECTIONS_FILE = (
+    Path(__file__).parent.parent.parent / "data" / "corrections" / "corrections.jsonl"
+)
+
+
+def save_correction_record(record: dict, pharmacy_id: str = "") -> None:
+    """
+    Save a single correction record dict to a per-pharmacy JSONL file.
+    Used as fallback when Supabase is not configured.
+
+    Each pharmacy writes to its own file (corrections_{pharmacy_id}.jsonl)
+    to prevent cross-tenant data leakage in dev/fallback mode.
+    """
+    import re
+    safe_pid = re.sub(r"[^a-zA-Z0-9_-]", "_", pharmacy_id) if pharmacy_id else "shared"
+    target = CORRECTIONS_FILE.parent / f"corrections_{safe_pid}.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    logger.info(f'"correction_file_saved","scan_id":"{record.get("scan_id")}","pharmacy_id":"{safe_pid}"')
 
 
 def save_corrections(scan_id: str, edited_medicines: List) -> int:
     """
     Saves pharmacist-corrected medicine lines as training pairs.
-
-    Each line written to corrections.jsonl looks like:
-    {
-        "scan_id": "a3f9bc",
-        "ocr_raw": "Tab Amoxici1lin 500mg",
-        "corrected_to": "Amoxicillin 500mg",
-        "brand_name": "Novamox",
-        "timestamp": "2024-01-15T10:32:11"
-    }
-
-    Input:  scan_id + list of MedicineLine objects where was_edited=True
-    Output: number of pairs saved
+    Accepts a list of objects with .was_edited, .ocr_raw, etc. attributes.
+    Returns number of pairs saved.
     """
     CORRECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     saved = 0
     with open(CORRECTIONS_FILE, "a", encoding="utf-8") as f:
         for med in edited_medicines:
-            # Only log lines where pharmacist actually changed something
             if not med.was_edited:
                 continue
-
             pair = {
-                "scan_id":      scan_id,
-                "ocr_raw":      med.ocr_raw,
+                "scan_id": scan_id,
+                "ocr_raw": med.ocr_raw,
                 "corrected_to": med.matched_name,
-                "brand_name":   med.brand_name or "",
+                "brand_name": med.brand_name or "",
                 "generic_name": med.generic_name or "",
-                "strength":     med.strength or "",
-                "timestamp":    datetime.utcnow().isoformat()
+                "strength": med.strength or "",
+                "timestamp": datetime.utcnow().isoformat(),
             }
             f.write(json.dumps(pair, ensure_ascii=False) + "\n")
             saved += 1
 
     if saved:
-        print(f"✓ Flywheel: {saved} correction(s) saved for scan {scan_id}")
+        logger.info(f'"flywheel_saved","count":{saved},"scan_id":"{scan_id}"')
 
     return saved
 

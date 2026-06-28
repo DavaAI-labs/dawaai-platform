@@ -1,110 +1,203 @@
-# DavaAI v3 — Setup Guide
+# DavaAI v5 — Smart Pharmacy Assistant
 
-## What's new in v3
-- ✅ Multi-pharmacy login (each pharmacy has its own account)
-- ✅ Inventory management (stock, expiry, MRP, purchase price, margin, supplier)
-- ✅ Two-stage expiry alerts (🔴 < 1 month, 🟡 < 3 months)
-- ✅ Low stock alerts per medicine
-- ✅ AI-powered prescription transcription (Claude fixes bad handwriting before fuzzy matching)
-- ✅ Fuzzy match against YOUR inventory (not a generic list)
-- ✅ Supabase backend (scalable PostgreSQL + auth)
+AI-powered prescription OCR + barcode inventory management for Indian pharmacies.
 
----
+## What it does
 
-## Step 1 — Set up Supabase (5 minutes)
+| Feature | How |
+|---|---|
+| Prescription scan | Photo → Google Vision OCR → Claude AI extraction → fuzzy match against inventory |
+| Barcode lookup | Scan barcode → instant medicine detail from Supabase or local CSV |
+| Billing | Add items to cart → atomic stock decrement → bill saved to Supabase |
+| Corrections flywheel | Every pharmacist edit is saved as an OCR training pair |
+| Expiry / low-stock alerts | DB views; query from any frontend |
 
-1. Go to https://supabase.com → Create account → New project
-2. Once created, go to **SQL Editor** → New query
-3. Paste the entire contents of `supabase/schema.sql` and click **Run**
-4. Go to **Settings → API** and copy:
-   - Project URL → `REACT_APP_SUPABASE_URL`
-   - `anon` public key → `REACT_APP_SUPABASE_ANON_KEY`
-   - `service_role` key → `SUPABASE_SERVICE_KEY` (backend only, keep secret)
+## Architecture
 
----
-
-## Step 2 — Configure environment variables
-
-**Frontend** — create `frontend/.env`:
 ```
-REACT_APP_SUPABASE_URL=https://xxxx.supabase.co
-REACT_APP_SUPABASE_ANON_KEY=eyJ...
-```
-
-**Backend** — create `backend/.env`:
-```
-SUPABASE_URL=https://xxxx.supabase.co
-SUPABASE_SERVICE_KEY=eyJ...
-GOOGLE_VISION_API_KEY=AIza...
-ANTHROPIC_API_KEY=sk-ant-...
+Frontend (React)
+    │  JWT (Supabase Auth)
+    ▼
+FastAPI backend  ──► Google Vision API (OCR)
+    │            ──► Claude AI (medicine extraction)
+    ▼
+Supabase (Postgres + Auth + Storage)
 ```
 
 ---
 
-## Step 3 — Run locally
+## Quick start (local)
 
-**Backend:**
-```powershell
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/your-org/dawaai.git
+cd dawaai
+cp .env.example .env
+# Fill in .env — at minimum: SUPABASE_URL, SUPABASE_SERVICE_KEY,
+# SUPABASE_JWT_SECRET, GOOGLE_VISION_API_KEY, ANTHROPIC_API_KEY
+```
+
+### 2. Run the database schema
+
+In the Supabase SQL Editor, run `supabase/schema.sql` (safe to re-run — uses
+`CREATE … IF NOT EXISTS` and `CREATE OR REPLACE` throughout).
+
+### 3. Seed the medicine database
+
+```bash
+pip install requests
+python scripts/seed_medicine_db.py --limit 2000
+# Optional: add Jan Aushadhi CSV
+python scripts/seed_medicine_db.py --jan-aushadhi data/medicine_db/jan_aushadhi_raw.csv
+```
+
+The Jan Aushadhi product list can be downloaded from
+https://janaushadhi.gov.in/ProductList.aspx (no account needed).
+
+### 4. Start with Docker Compose
+
+```bash
+docker compose up --build
+# API available at http://localhost:8000
+# Interactive docs at http://localhost:8000/docs
+```
+
+### 5. Run tests
+
+```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-```
-
-**Frontend (new terminal):**
-```powershell
-cd frontend
-npm install
-npm start
-```
-
-Open http://localhost:3000 → Register your pharmacy → Start using.
-
----
-
-## Step 4 — Deploy to Vercel (frontend)
-
-1. Push to GitHub
-2. Connect repo to Vercel
-3. Set environment variables in Vercel dashboard:
-   - `REACT_APP_SUPABASE_URL`
-   - `REACT_APP_SUPABASE_ANON_KEY`
-
-**Backend:** Deploy to Railway or Render (free tier):
-- Set all backend `.env` variables in the platform dashboard
-- Entry point: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-
----
-
-## New files in this version
-
-```
-frontend/src/
-  context/AuthContext.tsx    ← session + pharmacy state for whole app
-  pages/AuthPage.tsx         ← login + register (creates pharmacy)
-  pages/HomePage.tsx         ← updated with auth header + inventory link
-  pages/InventoryPage.tsx    ← full inventory CRUD with alerts
-  services/supabase.ts       ← all Supabase queries
-
-backend/
-  services/ocr_service.py    ← upgraded: Claude AI handwriting fix
-  api/routes.py              ← updated: matches against Supabase inventory
-
-supabase/
-  schema.sql                 ← run once in Supabase SQL editor
+pytest -v
 ```
 
 ---
 
-## How the upgraded OCR works
+## Environment variables
 
-**Before (v2):** OCR text → fuzzy match against static CSV
+| Variable | Required | Description |
+|---|---|---|
+| `SUPABASE_URL` | Yes | Your Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Yes | `service_role` key (backend only) |
+| `SUPABASE_JWT_SECRET` | Yes (prod) | JWT secret from Supabase dashboard → Settings → API |
+| `GOOGLE_VISION_API_KEY` | Yes | Google Cloud Vision API key |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
+| `SENTRY_DSN` | Recommended | Sentry DSN for error tracking |
+| `ALLOWED_ORIGINS` | Prod | Comma-separated list of frontend origins |
+| `ENVIRONMENT` | Prod | `production` / `staging` / `development` |
+| `WORKERS` | Optional | Uvicorn worker count (default: 4) |
 
-**Now (v3):**
-1. Google Vision OCR → raw messy text
-2. **Claude AI** reads the raw text and corrects spelling errors, abbreviations, merged words (e.g. "Pantoprozole 40mg Tab OD" → `{corrected_name: "Pantoprazole", strength: "40 mg", frequency: "OD"}`)
-3. Fuzzy match corrected name against **your pharmacy's actual inventory**
-4. If score ≥ 80 → auto-picked, shown in green
-5. If score 55–79 → auto-picked but **flagged for review** (shown in yellow)
-6. If score < 55 → no match, chemist types manually
+> `SUPABASE_JWT_SECRET` is in your Supabase dashboard → Project Settings → API → JWT Settings.
+> Without it, auth runs in dev-bypass mode (logs a warning, accepts `x-pharmacy-id` header).
 
-This dramatically improves accuracy for bad handwriting.
+---
+
+## Authentication
+
+Every API route (except `/health` and `/docs`) requires a Supabase JWT in the
+`Authorization: Bearer <token>` header. The JWT is issued by Supabase Auth on
+frontend login and must contain `pharmacy_id` in `app_metadata` or
+`user_metadata` (set by a Supabase DB trigger on `profiles` insert).
+
+**Dev mode** (no `SUPABASE_JWT_SECRET` set): auth is bypassed and the
+`x-pharmacy-id` header is accepted directly. This is intentional for local
+development but must not be used in production.
+
+---
+
+## Deployment (Railway)
+
+1. Create a new Railway project and link this repo.
+2. Set all environment variables in Railway's dashboard.
+3. Railway auto-detects the `Dockerfile` at the repo root and builds it.
+4. The CI/CD pipeline (`.github/workflows/ci.yml`) deploys to Railway on
+   every push to `main` after all tests pass.
+
+To get `RAILWAY_TOKEN`: Railway dashboard → Account → Tokens → New Token.
+Add it as a GitHub secret named `RAILWAY_TOKEN`.
+
+---
+
+## API reference
+
+Full interactive docs are available at `/docs` (Swagger UI) and `/redoc`.
+
+### Key endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/scan` | JWT | Upload prescription image, get medicine list |
+| `POST` | `/api/corrections` | JWT | Save pharmacist correction |
+| `GET` | `/api/barcode/{barcode}` | JWT | Look up medicine by barcode |
+| `GET` | `/api/medicines/search?q=` | JWT | Search medicines by name |
+| `POST` | `/api/barcode/bill` | JWT | Create bill and decrement stock |
+| `GET` | `/health` | None | Health check |
+
+---
+
+## Upgrading from v4
+
+1. **Run new schema additions** in Supabase SQL Editor (the full `schema.sql`
+   is safe to re-run).
+
+2. **Add `SUPABASE_JWT_SECRET`** to your environment. Get it from:
+   Supabase dashboard → Project Settings → API → JWT Settings → JWT Secret.
+
+3. **Update your frontend** to send `Authorization: Bearer <token>` on every
+   API request. The token is the Supabase session access token.
+
+4. **Re-seed the medicine database** if you want a larger drug list:
+   ```bash
+   python scripts/seed_medicine_db.py --limit 5000
+   ```
+
+5. **Deploy the new backend** — same entry point: `uvicorn main:app`.
+
+No breaking changes to API response shapes.
+
+---
+
+## Medicine data sources
+
+| Source | Coverage | How to get |
+|---|---|---|
+| OpenFDA Drug Labels | ~100k international drugs | Auto-fetched by `seed_medicine_db.py` |
+| Jan Aushadhi | ~2000 Indian generic drugs | Download CSV from janaushadhi.gov.in |
+| CDSCO (manual) | Indian branded drugs | Manual CSV; add via `--jan-aushadhi` flag |
+
+---
+
+## Project structure
+
+```
+dawaai-v5/
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+├── .github/
+│   └── workflows/
+│       └── ci.yml              # lint + test + docker build + deploy
+├── scripts/
+│   └── seed_medicine_db.py     # seeds medicines.csv from OpenFDA + Jan Aushadhi
+├── supabase/
+│   └── schema.sql              # full DB schema with RLS, indexes, RPC functions
+└── backend/
+    ├── main.py                 # FastAPI app, middleware, rate limiting, Sentry
+    ├── requirements.txt
+    ├── pytest.ini
+    ├── middleware/
+    │   └── auth.py             # JWT verification, require_pharmacy dependency
+    ├── api/
+    │   ├── routes.py           # /scan, /corrections
+    │   └── barcode_routes.py   # /barcode/*, /medicines/search, /barcode/bill
+    ├── services/
+    │   ├── supabase_client.py  # shared headers, URL
+    │   ├── ocr_service.py      # async OCR + AI pipeline
+    │   ├── fuzzy_match.py      # medicines.csv fuzzy matching
+    │   └── correction_store.py # per-pharmacy JSONL fallback
+    └── tests/
+        ├── conftest.py
+        ├── test_fuzzy_match.py
+        ├── test_ocr_service.py
+        └── test_routes.py
+```
